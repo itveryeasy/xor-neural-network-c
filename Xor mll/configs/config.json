@@ -1,0 +1,5 @@
+{
+    "dataset_path": "data/dataset.csv",
+    "model_path": "models/model.pkl",
+    "log_path": "logs/app.log"
+}

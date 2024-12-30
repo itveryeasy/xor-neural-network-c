@@ -1,150 +1,233 @@
 import os
+import logging
+from dask import dataframe as dd
+from ray import tune
+import tensorflow as tf
+import json
 
-# Create the directory for the C project
-project_dir = 'neural_network_project'
-if not os.path.exists(project_dir):
-    os.makedirs(project_dir)
+# Create and configure logger
+logging.basicConfig(
+    filename="logs/app.log",
+    format='%(asctime)s %(message)s',
+    filemode='w'
+)
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
 
-# Content for the C files
+def create_file(path, content):
+    try:
+        with open(path, 'w') as file:
+            file.write(content)
+        print(f"Created file: {path}")
+    except Exception as e:
+        logger.error(f"Failed to create file: {path}. Error: {e}")
 
-files = {
-    'main.c': '''#include <stdio.h>
-#include "neural_network.h"
+def setup_project_structure(root_folder):
+    directories = [
+        root_folder,
+        os.path.join(root_folder, "data"),
+        os.path.join(root_folder, "models"),
+        os.path.join(root_folder, "src"),
+        os.path.join(root_folder, "logs"),
+        os.path.join(root_folder, "configs"),
+        os.path.join(root_folder, "streamlit"),
+        os.path.join(root_folder, "docker"),
+        os.path.join(root_folder, "k8s"),
+        os.path.join(root_folder, "terraform")
+    ]
 
-int main() {
-    // Define input and output data
-    double inputs[4][2] = {
-        {0, 0},
-        {0, 1},
-        {1, 0},
-        {1, 1}
-    };
-    double outputs[4] = {0, 1, 1, 0}; // XOR
+    for directory in directories:
+        try:
+            os.makedirs(directory, exist_ok=True)
+            print(f"Created directory: {directory}")
+        except Exception as e:
+            logger.error(f"Failed to create directory: {directory}. Error: {e}")
 
-    // Create and initialize the neural network
-    NeuralNetwork nn;
-    initialize_network(&nn, 2, 1, 0.1);
+    # Create initial files
+    create_file(os.path.join(root_folder, "README.md"), "# Project: Scalable Financial Data Prediction\n\nThis project implements an MLOps pipeline for financial data prediction using scalable and distributed frameworks.")
 
-    // Train the network
-    train(&nn, inputs, outputs, 4, 10000);
+    create_file(os.path.join(root_folder, "requirements.txt"), """
+# Python dependencies
+numpy
+pandas
+dask
+ray[default]
+tensorflow
+joblib
+streamlit
+scikit-learn
+kubernetes
+""")
 
-    // Test the network
-    for (int i = 0; i < 4; i++) {
-        double prediction = predict(&nn, inputs[i]);
-        printf("Input: [%%0.1f, %%0.1f] Prediction: %%0.1f\\n",
-               inputs[i][0], inputs[i][1], prediction > 0.5 ? 1.0 : 0.0);
-    }
+    create_file(os.path.join(root_folder, "configs", "config.json"), '{\n    "dataset_path": "data/financial_data.csv",\n    "model_path": "models/random_forest_model.pkl",\n    "log_path": "logs/app.log",\n    "test_size": 0.2,\n    "random_state": 42,\n    "batch_size": 1024\n}')
 
-    return 0;
+    create_file(os.path.join(root_folder, "src", "data_preprocessing.py"), """
+import dask.dataframe as dd
+
+def load_data(file_path):
+    try:
+        return dd.read_csv(file_path)
+    except Exception as e:
+        print(f'Error loading data: {e}')
+        return None
+
+def preprocess_data(df):
+    df = df.dropna()
+    return df
+""")
+
+    create_file(os.path.join(root_folder, "src", "train_model.py"), """
+import dask.dataframe as dd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import joblib
+import json
+import tensorflow as tf
+import os
+
+def train_random_forest(config_path):
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    data = dd.read_csv(config['dataset_path'])
+    data = data.dropna().compute()
+
+    X = data.iloc[:, :-1]
+    y = data.iloc[:, -1]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=config['test_size'], random_state=config['random_state']
+    )
+
+    model = RandomForestClassifier(random_state=config['random_state'])
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+    print(f'Model Accuracy: {accuracy * 100:.2f}%')
+
+    joblib.dump(model, config['model_path'])
+    print(f'Model saved to {config['model_path']}')
+
+if __name__ == '__main__':
+    config_path = os.path.join('configs', 'config.json')
+    train_random_forest(config_path)
+""")
+
+    create_file(os.path.join(root_folder, "src", "main.py"), """
+import os
+from data_preprocessing import load_data, preprocess_data
+from train_model import train_random_forest
+
+def main():
+    config_path = os.path.join('configs', 'config.json')
+    train_random_forest(config_path)
+
+if __name__ == '__main__':
+    main()
+""")
+
+    create_file(os.path.join(root_folder, "streamlit", "app.py"), """
+import streamlit as st
+import pandas as pd
+import joblib
+import os
+
+st.title('Scalable Financial Data Prediction')
+
+uploaded_file = st.file_uploader("Upload your dataset (CSV format)", type="csv")
+
+if uploaded_file:
+    data = pd.read_csv(uploaded_file)
+    st.write("Uploaded Dataset:")
+    st.write(data.head())
+
+    model_path = os.path.join('models', 'random_forest_model.pkl')
+    if os.path.exists(model_path):
+        model = joblib.load(model_path)
+        predictions = model.predict(data)
+        st.write("Predictions:")
+        st.write(predictions)
+    else:
+        st.error("Model file not found. Please train the model first.")
+""")
+
+    create_file(os.path.join(root_folder, "docker", "Dockerfile"), """
+# Base image
+FROM python:3.9-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY . /app
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Expose Streamlit port
+EXPOSE 8501
+
+# Run Streamlit
+CMD ["streamlit", "run", "streamlit/app.py", "--server.port=8501", "--server.enableCORS=false"]
+""")
+
+    create_file(os.path.join(root_folder, "docker", "docker-compose.yml"), """
+version: '3.8'
+services:
+  streamlit-app:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+""")
+
+    create_file(os.path.join(root_folder, "k8s", "deployment.yaml"), """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: financial-prediction-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: financial-prediction-app
+  template:
+    metadata:
+      labels:
+        app: financial-prediction-app
+    spec:
+      containers:
+      - name: app
+        image: financial-prediction:latest
+        ports:
+        - containerPort: 8501
+""")
+
+    create_file(os.path.join(root_folder, "terraform", "main.tf"), """
+provider "aws" {
+  region = "us-west-2"
 }
-''',
 
-    'neural_network.h': '''#ifndef NEURAL_NETWORK_H
-#define NEURAL_NETWORK_H
+resource "aws_ecs_cluster" "financial_prediction_cluster" {}
 
-typedef struct {
-    double weights[2]; // Weights for 2 inputs
-    double bias;       // Bias
-    double learning_rate; // Learning rate
-} NeuralNetwork;
-
-void initialize_network(NeuralNetwork *nn, int input_size, int output_size, double learning_rate);
-void train(NeuralNetwork *nn, double inputs[][2], double outputs[], int num_samples, int epochs);
-double predict(NeuralNetwork *nn, double input[2]);
-
-#endif
-''',
-
-    'neural_network.c': '''#include <stdlib.h>
-#include "neural_network.h"
-#include "utils.h"
-
-void initialize_network(NeuralNetwork *nn, int input_size, int output_size, double learning_rate) {
-    for (int i = 0; i < input_size; i++) {
-        nn->weights[i] = (double)rand() / RAND_MAX;
-    }
-    nn->bias = 0.5; // Initialize bias
-    nn->learning_rate = learning_rate;
+resource "aws_ecs_service" "financial_prediction_service" {
+  cluster        = aws_ecs_cluster.financial_prediction_cluster.id
+  desired_count  = 3
 }
+""")
 
-void train(NeuralNetwork *nn, double inputs[][2], double outputs[], int num_samples, int epochs) {
-    for (int epoch = 0; epoch < epochs; epoch++) {
-        for (int i = 0; i < num_samples; i++) {
-            double input1 = inputs[i][0];
-            double input2 = inputs[i][1];
-            double target = outputs[i];
+    create_file(os.path.join(root_folder, "data", ".gitkeep"), "")
+    create_file(os.path.join(root_folder, "models", ".gitkeep"), "")
+    create_file(os.path.join(root_folder, "logs", ".gitkeep"), "")
 
-            // Forward pass
-            double z = input1 * nn->weights[0] + input2 * nn->weights[1] + nn->bias;
-            double prediction = sigmoid(z);
+if __name__ == "__main__":
+    project_name = input("Enter the project name: ").strip()
 
-            // Error calculation
-            double error = target - prediction;
-
-            // Backpropagation
-            double adjustment = error * sigmoid_derivative(prediction);
-            nn->weights[0] += adjustment * input1 * nn->learning_rate;
-            nn->weights[1] += adjustment * input2 * nn->learning_rate;
-            nn->bias += adjustment * nn->learning_rate;
-        }
-    }
-}
-
-double predict(NeuralNetwork *nn, double input[2]) {
-    double z = input[0] * nn->weights[0] + input[1] * nn->weights[1] + nn->bias;
-    return sigmoid(z);
-}
-''',
-
-    'utils.h': '''#ifndef UTILS_H
-#define UTILS_H
-
-double sigmoid(double x);
-double sigmoid_derivative(double x);
-
-#endif
-''',
-
-    'utils.c': '''#include <math.h>
-#include "utils.h"
-
-double sigmoid(double x) {
-    return 1.0 / (1.0 + exp(-x));
-}
-
-double sigmoid_derivative(double x) {
-    return x * (1.0 - x);
-}
-''',
-
-    'Makefile': '''CC = gcc
-CFLAGS = -Wall -Wextra -std=c99
-
-OBJ = main.o neural_network.o utils.o
-
-all: neural_network
-
-neural_network: $(OBJ)
-	$(CC) $(CFLAGS) -o neural_network $(OBJ)
-
-main.o: main.c neural_network.h
-	$(CC) $(CFLAGS) -c main.c
-
-neural_network.o: neural_network.c neural_network.h utils.h
-	$(CC) $(CFLAGS) -c neural_network.c
-
-utils.o: utils.c utils.h
-	$(CC) $(CFLAGS) -c utils.c
-
-clean:
-	rm -f *.o neural_network
-'''
-}
-
-# Create and write the files
-for filename, content in files.items():
-    file_path = os.path.join(project_dir, filename)
-    with open(file_path, 'w') as file:
-        file.write(content)
-
-print(f"Project files have been generated in the '{project_dir}' directory.")
+    if not project_name:
+        print("Project name cannot be empty!")
+    else:
+        setup_project_structure(project_name)
+        print(f"Scalable MLOps project setup complete in folder: {project_name}")
